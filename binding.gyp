@@ -13,7 +13,7 @@
                 "-O3",
                 "-fno-strict-aliasing",
                 "-fvisibility=hidden",
-                "-DFPNG_NO_STDIO",
+                "-DFPNG_NO_STDIO"
             ],
             "include_dirs": [
                 "<!(node -e \"require('nan')\")",
