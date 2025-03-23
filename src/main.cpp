@@ -40,10 +40,22 @@ class PngDecodeWorker : public Nan::AsyncWorker {
   void HandleOKCallback() override {
     Nan::HandleScope scope;
   
-    Local<Object> buf = NewBuffer((char*)closure->buffer, closure->width * closure->height * 4, [] (char *data, void* hint) {
-      free(data);
-    }, nullptr).ToLocalChecked();
-    Local<Value> argv[4] = { Nan::Null(), buf, Nan::New<v8::Int32>(closure->width), Nan::New<v8::Int32>(closure->height) };
+    size_t length = closure->width * closure->height * 4;
+    uint8_t* data = closure->buffer;
+
+    std::shared_ptr<v8::BackingStore> backing = v8::ArrayBuffer::NewBackingStore(
+      data,
+      length,
+      [](void* data, size_t len, void* deleter_data) {
+        free(data);
+      },
+      nullptr
+    );
+
+    v8::Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(v8::Isolate::GetCurrent(), backing);
+    v8::Local<v8::Object> buffer = node::Buffer::New(v8::Isolate::GetCurrent(), ab, 0, length).ToLocalChecked();
+
+    Local<Value> argv[4] = { Nan::Null(), buffer, Nan::New<v8::Int32>(closure->width), Nan::New<v8::Int32>(closure->height) };
     callback->Call(4, argv, async_resource);
   }
 
@@ -82,15 +94,30 @@ class PngEncodeWorker : public Nan::AsyncWorker {
     Nan::HandleScope scope;
     if (closure->outputVector) {
       auto vectorPtr = closure->outputVector.release();
-      Local<Object> buf = NewBuffer((char*)vectorPtr->data(), vectorPtr->size(), [] (char *data, void* hint) {
-        auto output = static_cast<std::vector<uint8_t*>*>(hint);
-        delete output;
-      }, vectorPtr).ToLocalChecked();
-    Local<Value> argv[2] = { Nan::Null(), buf };
-    callback->Call(2, argv, async_resource);
-    return;
-      
-  }
+      size_t length = vectorPtr->size();
+      uint8_t* data = vectorPtr->data();
+
+      // Allocate new transferable memory and copy
+      uint8_t* transferableData = static_cast<uint8_t*>(malloc(length));
+      memcpy(transferableData, data, length);
+      delete vectorPtr;
+
+      std::shared_ptr<v8::BackingStore> backing = v8::ArrayBuffer::NewBackingStore(
+        transferableData,
+        length,
+        [](void* data, size_t len, void* deleter_data) {
+          free(data);
+        },
+        nullptr
+      );
+
+      v8::Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(v8::Isolate::GetCurrent(), backing);
+      v8::Local<v8::Object> buffer = node::Buffer::New(v8::Isolate::GetCurrent(), ab, 0, length).ToLocalChecked();
+
+      Local<Value> argv[2] = { Nan::Null(), buffer };
+      callback->Call(2, argv, async_resource);
+      return;
+    }
 
     Local<Object> buf = NewBuffer((char*)closure->output, closure->outputLength, [] (char *data, void* hint) {
       free(data);
