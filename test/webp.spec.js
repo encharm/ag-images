@@ -24,11 +24,6 @@ describe('decodeWebP', () => {
     await assert.rejects(() => decodeWebP(webp.subarray(0, 20)));
   });
 
-  it('rejects VP8X (extended WebP) with a clear error', async () => {
-    const webp = fs.readFileSync(path.join(__dirname, 'vp8x.webp'));
-    await assert.rejects(() => decodeWebP(webp), /VP8X/);
-  });
-
   it('decodes lossy webp (VP8)', async () => {
     const webp = fs.readFileSync(path.join(__dirname, 'rgb.lossy.webp'));
     const image = await decodeWebP(webp);
@@ -60,6 +55,119 @@ describe('decodeWebP', () => {
     assert.strictEqual(image.width, 128);
     assert.strictEqual(image.height, 128);
     assert.strictEqual(image.data.length, 128 * 128 * 4);
+  });
+
+  it('decodes 1x1 lossless webp (VP8L minimum dimension)', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, '1x1.lossless.webp'));
+    const image = await decodeWebP(webp);
+    assert.strictEqual(image.width, 1);
+    assert.strictEqual(image.height, 1);
+    assert.strictEqual(image.data.length, 4);
+    // Should be red: R=255, G=0, B=0, A=255
+    assert.strictEqual(image.data[0], 255); // R
+    assert.strictEqual(image.data[3], 255); // A
+  });
+
+  it('decodes 1x1 lossy webp (VP8 minimum dimension)', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, '1x1.lossy.webp'));
+    const image = await decodeWebP(webp);
+    assert.strictEqual(image.width, 1);
+    assert.strictEqual(image.height, 1);
+    assert.strictEqual(image.data.length, 4);
+    assert.strictEqual(image.data[3], 255); // A (lossy VP8 is always opaque)
+  });
+
+  it('decodes all-opaque lossless webp (alpha_is_used=0)', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, 'opaque.lossless.webp'));
+    const image = await decodeWebP(webp);
+    assert.strictEqual(image.width, 16);
+    assert.strictEqual(image.height, 16);
+    // Every pixel should have alpha = 255
+    for (let i = 0; i < 16 * 16; i++) {
+      assert.strictEqual(image.data[i * 4 + 3], 255, `pixel ${i}: alpha should be 255`);
+    }
+    // Pixels should not all be the same (it's a vertical gradient)
+    const row0_r = image.data[0], row1_r = image.data[16 * 4];
+    assert.notStrictEqual(row0_r, row1_r, 'gradient rows should differ');
+  });
+
+  it('decodes palette/indexed lossless webp (<=16 colors, pixel bundling)', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, 'palette4.lossless.webp'));
+    const image = await decodeWebP(webp);
+    assert.strictEqual(image.width, 8);
+    assert.strictEqual(image.height, 8);
+    assert.strictEqual(image.data.length, 8 * 8 * 4);
+    // Collect unique colors
+    const colors = new Set();
+    for (let i = 0; i < 64; i++) {
+      const off = i * 4;
+      colors.add(`${image.data[off]},${image.data[off+1]},${image.data[off+2]}`);
+    }
+    assert.strictEqual(colors.size, 4, 'should have exactly 4 unique colors');
+  });
+
+  it('decodes VP8X extended webp (lossy + alpha)', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, 'rgba.lossy_alpha.webp'));
+    const image = await decodeWebP(webp);
+    assert.strictEqual(image.width, 32);
+    assert.strictEqual(image.height, 32);
+    assert.strictEqual(image.data.length, 32 * 32 * 4);
+    // VP8X with alpha should have some transparent pixels
+    let hasTransparent = false;
+    for (let i = 0; i < 32 * 32; i++) {
+      if (image.data[i * 4 + 3] < 255) { hasTransparent = true; break; }
+    }
+    assert(hasTransparent, 'VP8X lossy+alpha should have transparent pixels');
+  });
+
+  it('decodes VP8X extended webp (semitransparent)', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, 'semitransparent.lossy_alpha.webp'));
+    const image = await decodeWebP(webp);
+    assert.strictEqual(image.width, 128);
+    assert.strictEqual(image.height, 128);
+  });
+
+  it('decodes VP8X with premultiplied alpha', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, 'rgba.lossy_alpha.webp'));
+    const straight = await decodeWebP(webp, { premultiplied: false });
+    const premul = await decodeWebP(webp, { premultiplied: true });
+    assert.strictEqual(straight.width, premul.width);
+    // Alpha should be identical in both modes
+    for (let i = 0; i < straight.width * straight.height; i++) {
+      assert.strictEqual(premul.data[i * 4 + 3], straight.data[i * 4 + 3],
+        `pixel ${i}: alpha mismatch`);
+    }
+  });
+
+  it('decodes large lossless webp (2900x3900, large Huffman tables)', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, 'large_lossless.webp'));
+    const image = await decodeWebP(webp);
+    assert.strictEqual(image.width, 2900);
+    assert.strictEqual(image.height, 3900);
+    assert.strictEqual(image.data.length, 2900 * 3900 * 4);
+  });
+
+  it('large lossless webp matches source PNG pixel-for-pixel', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, 'large_lossless.webp'));
+    const png = fs.readFileSync(path.join(__dirname, 'large_lossless.png'));
+    const fromWebp = await decodeWebP(webp);
+    const fromPng = await decodePNG(png);
+    assert.strictEqual(fromWebp.width, fromPng.width);
+    assert.strictEqual(fromWebp.height, fromPng.height);
+    assert.strictEqual(Buffer.compare(fromWebp.data, fromPng.data), 0,
+      'lossless WebP should be bit-identical to source PNG');
+  });
+
+  it('decodes odd-dimension lossy webp (chroma subsampling edge)', async () => {
+    const webp = fs.readFileSync(path.join(__dirname, 'odd_dimensions.lossy.webp'));
+    const image = await decodeWebP(webp);
+    assert.strictEqual(image.width, 31);
+    assert.strictEqual(image.height, 17);
+    assert.strictEqual(image.data.length, 31 * 17 * 4);
+    // Verify all alpha is 255 (lossy VP8 is opaque)
+    for (let i = 0; i < 31 * 17; i++) {
+      assert.strictEqual(image.data[i * 4 + 3], 255, `pixel ${i}: alpha should be 255`);
+    }
   });
 
   it('lossless round-trips PNG pixel values exactly (where alpha > 0)', async () => {
@@ -187,9 +295,11 @@ describe('decode (auto-detect)', () => {
     await assert.rejects(() => decode(Buffer.alloc(0)), /Unsupported image format/);
   });
 
-  it('rejects VP8X through auto-detect with a clear error', async () => {
+  it('auto-detects and decodes VP8X through decode()', async () => {
     const webp = fs.readFileSync(path.join(__dirname, 'vp8x.webp'));
-    await assert.rejects(() => decode(webp), /VP8X/);
+    const image = await decode(webp);
+    assert.strictEqual(image.width, 128);
+    assert.strictEqual(image.height, 128);
   });
 
   it('auto-detects and decodes PNG', async () => {
