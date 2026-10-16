@@ -3,4 +3,5 @@
 build
 node_modules
 test/*.out.png
+__pycache__/
 .v8-cache
