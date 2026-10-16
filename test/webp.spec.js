@@ -128,14 +128,22 @@ describe('decodeWebP', () => {
   });
 
   it('decodes VP8X with premultiplied alpha', async () => {
-    const webp = fs.readFileSync(path.join(__dirname, 'rgba.lossy_alpha.webp'));
-    const straight = await decodeWebP(webp, { premultiplied: false });
-    const premul = await decodeWebP(webp, { premultiplied: true });
-    assert.strictEqual(straight.width, premul.width);
-    // Alpha should be identical in both modes
-    for (let i = 0; i < straight.width * straight.height; i++) {
-      assert.strictEqual(premul.data[i * 4 + 3], straight.data[i * 4 + 3],
-        `pixel ${i}: alpha mismatch`);
+    // rgba.lossy_alpha.webp has alpha 0 and 255, semitransparent.lossy_alpha.webp has alpha 128
+    for (const file of ['rgba.lossy_alpha.webp', 'semitransparent.lossy_alpha.webp']) {
+      const webp = fs.readFileSync(path.join(__dirname, file));
+      const straight = await decodeWebP(webp, { premultiplied: false });
+      const premul = await decodeWebP(webp, { premultiplied: true });
+      assert.strictEqual(straight.width, premul.width);
+      for (let i = 0; i < straight.width * straight.height; i++) {
+        const off = i * 4;
+        const a = straight.data[off + 3];
+        // Alpha should be identical in both modes
+        assert.strictEqual(premul.data[off + 3], a, `${file} pixel ${i}: alpha mismatch`);
+        for (let c = 0; c < 3; c++) {
+          assert.strictEqual(premul.data[off + c], Math.round(straight.data[off + c] * a / 255),
+            `${file} pixel ${i} channel ${c} (straight=${straight.data[off + c]}, alpha=${a})`);
+        }
+      }
     }
   });
 
@@ -222,12 +230,12 @@ describe('premultiplied alpha correctness', () => {
         assert.strictEqual(premul.data[off + 2], 0, `pixel ${i}: premul B should be 0 for alpha=0`);
         checked++;
       } else if (a < 255) {
-        // Semi-transparent: verify premul = round(straight * a / 255) within ±1
+        // Semi-transparent: verify premul = round(straight * a / 255)
         for (let c = 0; c < 3; c++) {
           const expected = Math.round(straight.data[off + c] * a / 255);
           const actual = premul.data[off + c];
-          assert(Math.abs(actual - expected) <= 1,
-            `pixel ${i} channel ${c}: expected ~${expected}, got ${actual} (straight=${straight.data[off + c]}, alpha=${a})`);
+          assert.strictEqual(actual, expected,
+            `pixel ${i} channel ${c} (straight=${straight.data[off + c]}, alpha=${a})`);
         }
         checked++;
       } else {
@@ -262,8 +270,8 @@ describe('premultiplied alpha correctness', () => {
         for (let c = 0; c < 3; c++) {
           const expected = Math.round(straight.data[off + c] * a / 255);
           const actual = premul.data[off + c];
-          assert(Math.abs(actual - expected) <= 1,
-            `pixel ${i} channel ${c}: expected ~${expected}, got ${actual} (straight=${straight.data[off + c]}, alpha=${a})`);
+          assert.strictEqual(actual, expected,
+            `pixel ${i} channel ${c} (straight=${straight.data[off + c]}, alpha=${a})`);
         }
         checked++;
       } else {
@@ -274,6 +282,36 @@ describe('premultiplied alpha correctness', () => {
       }
     }
     assert.strictEqual(checked, pixels);
+  });
+
+  it('PNG: premul channels equal round(straight * alpha / 255) for every colour and alpha', async () => {
+    // pixel (x, y) has alpha y, and each colour channel takes every value once per row
+    const size = 256;
+    const data = Buffer.alloc(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const off = (y * size + x) * 4;
+        data[off] = x;
+        data[off + 1] = 255 - x;
+        data[off + 2] = x ^ y;
+        data[off + 3] = y;
+      }
+    }
+    const png = await encodePNG(size, size, data, { compressionLevel: 1 });
+    const premul = await decodePNG(png, { premultiplied: true });
+
+    const mismatches = [];
+    for (let off = 0; off < data.length; off += 4) {
+      const a = data[off + 3];
+      assert.strictEqual(premul.data[off + 3], a, `pixel ${off / 4}: alpha mismatch`);
+      for (let c = 0; c < 3; c++) {
+        const expected = Math.round(data[off + c] * a / 255);
+        if (premul.data[off + c] !== expected) {
+          mismatches.push(`straight=${data[off + c]} alpha=${a} gives ${premul.data[off + c]} instead of ${expected}`);
+        }
+      }
+    }
+    assert.strictEqual(mismatches.length, 0, `${mismatches.length} channels differ, e.g. ${mismatches.slice(0, 3).join('; ')}`);
   });
 
   it('PNG and WebP produce identical premul output for same image', async () => {
